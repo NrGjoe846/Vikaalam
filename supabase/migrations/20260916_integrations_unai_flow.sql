@@ -93,7 +93,8 @@ ALTER TABLE integrations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whatsapp_campaign_jobs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE whatsapp_messages_log ENABLE ROW LEVEL SECURITY;
 
--- Integrations RLS: Allow authenticated tenant users to read non-secret columns, or service role full access
+-- Integrations RLS: Drop existing policies first if re-running migration
+DROP POLICY IF EXISTS "Tenant isolation for integrations SELECT" ON integrations;
 CREATE POLICY "Tenant isolation for integrations SELECT"
     ON integrations FOR SELECT
     USING (
@@ -101,6 +102,7 @@ CREATE POLICY "Tenant isolation for integrations SELECT"
         OR current_setting('role', true) = 'service_role'
     );
 
+DROP POLICY IF EXISTS "Tenant isolation for integrations INSERT" ON integrations;
 CREATE POLICY "Tenant isolation for integrations INSERT"
     ON integrations FOR INSERT
     WITH CHECK (
@@ -108,6 +110,7 @@ CREATE POLICY "Tenant isolation for integrations INSERT"
         OR current_setting('role', true) = 'service_role'
     );
 
+DROP POLICY IF EXISTS "Tenant isolation for integrations UPDATE" ON integrations;
 CREATE POLICY "Tenant isolation for integrations UPDATE"
     ON integrations FOR UPDATE
     USING (
@@ -115,6 +118,7 @@ CREATE POLICY "Tenant isolation for integrations UPDATE"
         OR current_setting('role', true) = 'service_role'
     );
 
+DROP POLICY IF EXISTS "Tenant isolation for integrations DELETE" ON integrations;
 CREATE POLICY "Tenant isolation for integrations DELETE"
     ON integrations FOR DELETE
     USING (
@@ -123,6 +127,7 @@ CREATE POLICY "Tenant isolation for integrations DELETE"
     );
 
 -- Campaigns RLS
+DROP POLICY IF EXISTS "Tenant isolation for whatsapp_campaign_jobs" ON whatsapp_campaign_jobs;
 CREATE POLICY "Tenant isolation for whatsapp_campaign_jobs"
     ON whatsapp_campaign_jobs FOR ALL
     USING (
@@ -131,6 +136,7 @@ CREATE POLICY "Tenant isolation for whatsapp_campaign_jobs"
     );
 
 -- Messages Log RLS
+DROP POLICY IF EXISTS "Tenant isolation for whatsapp_messages_log" ON whatsapp_messages_log;
 CREATE POLICY "Tenant isolation for whatsapp_messages_log"
     ON whatsapp_messages_log FOR ALL
     USING (
