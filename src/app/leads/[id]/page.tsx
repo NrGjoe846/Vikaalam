@@ -99,6 +99,18 @@ export default function LeadWorkspacePage({ params }: { params?: { id?: string }
     setMessages((prev) => [...prev, newMsg]);
     if (!textToSend) setInputText('');
 
+    // Dispatch via UNAI FLOW WhatsApp if message sent by employee
+    if (sender === 'EMPLOYEE') {
+      fetch('/api/integrations/unai-flow/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: lead.customer.phone,
+          message: text,
+        }),
+      }).catch(() => {});
+    }
+
     if (sender === 'CUSTOMER') {
       setIsProcessingAI(true);
       try {
@@ -117,6 +129,16 @@ export default function LeadWorkspacePage({ params }: { params?: { id?: string }
           timestamp: new Date().toISOString(),
           status: 'READ',
         };
+
+        // Dispatch outbound AI WhatsApp message via UNAI FLOW
+        fetch('/api/integrations/unai-flow/messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            to: lead.customer.phone,
+            message: result.responseMessage,
+          }),
+        }).catch(() => {});
 
         setMessages((prev) => [...prev, aiMsg]);
         setLead(result.updatedLead);
