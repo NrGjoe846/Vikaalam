@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
       oauthClientId,
       oauthClientSecret,
       applicationId,
-      baseUrl,
+      baseUrl = 'https://unai-flow-backend-w4al.onrender.com',
       orgId = 'org_default',
     } = body;
 
@@ -50,18 +50,19 @@ export async function POST(req: NextRequest) {
       'unai_flow',
       'whatsapp_bulk',
       {
-        applicationId: applicationId?.trim() || 'unai_crm_app',
+        applicationId: testResult.applicationId || applicationId?.trim() || 'unai_crm_app',
         clientId: clientId?.trim(),
         clientSecret: clientSecret?.trim(),
         apiKey: apiKey.trim(),
         apiSecret: apiSecret?.trim(),
         oauthClientId: oauthClientId?.trim(),
         oauthClientSecret: oauthClientSecret?.trim(),
-        baseUrl: baseUrl?.trim() || 'http://localhost:8000',
+        baseUrl: baseUrl?.trim() || 'https://unai-flow-backend-w4al.onrender.com',
         status: 'CONNECTED',
-        whatsappNumber: testResult.whatsappNumber || '+91 98401 12345',
+        whatsappNumber: testResult.whatsappNumber || '+919342745299',
         metadata: {
-          instance_id: testResult.instanceId || 'inst_default',
+          application_name: testResult.applicationName || 'CRM',
+          scopes: testResult.scopes || [],
           connected_via: 'developer_console',
         },
       }

@@ -1,23 +1,32 @@
 {
   "org_default:unai_flow:whatsapp_bulk": {
-    "id": "int_1789557413721",
-    "createdAt": "2026-09-16T11:16:53.721Z",
+    "id": "int_unai_flow_live",
     "organizationId": "org_default",
     "provider": "unai_flow",
     "integrationType": "whatsapp_bulk",
-    "applicationId": "vikaalam-crm-acquisition",
-    "encrypted_client_secret": "",
-    "encrypted_api_key": "ac4a70d53de616418513f6d2:492ed3e18df3e7056fff5b7153a489f9:4de4b2c34ca0d9baa4cc185e0042510be737d17977ebf8247b78739237d36ec5fb709e1d277861d4a290b70fd29958020a84",
-    "encrypted_api_secret": "",
-    "encrypted_oauth_client_secret": "",
-    "baseUrl": "http://localhost:8000",
+    "applicationId": "feb6c205-f924-41b1-8e59-3c452e799ea9",
+    "clientId": "unai_client_3a0efe21470a1c4f85992155",
+    "encrypted_client_secret": "5b775be67dd58491a6ba6655:877a01dac351854970a205d771bad83d:902567f1a93baeda1a9ca20a7194ffa13db59f079370c147fa680d713c2990822b533e476400af391f8e0ea76c442be7ecbb94fd",
+    "encrypted_api_key": "e8dc6ca69f8e7d90b291c184:fca94ef38cea4a0c866d34a48409418f:1266aeeb6647be7a57faa11880df3a1a55fe9830f5ae80c3f6a7e7e37c9c4200425158066450899e3e26badc3d28e76566f4b1",
+    "baseUrl": "https://unai-flow-backend-w4al.onrender.com",
     "status": "CONNECTED",
-    "whatsappNumber": "+91 98401 12345",
+    "whatsappNumber": "+919342745299",
     "metadata": {
-      "instance_id": "inst_dev_simulated",
-      "connected_via": "developer_console"
+      "application_name": "CRM",
+      "environment": "live",
+      "scopes": [
+        "channels:read",
+        "messages:send",
+        "webhooks:manage",
+        "campaigns:read",
+        "usage:read",
+        "instances:read",
+        "campaigns:write",
+        "webhooks:read"
+      ]
     },
-    "lastTestedAt": "2026-09-16T11:18:23.031Z",
-    "updatedAt": "2026-09-16T11:18:23.031Z"
+    "lastTestedAt": "2026-09-19T07:49:24.437Z",
+    "createdAt": "2026-09-19T07:49:24.438Z",
+    "updatedAt": "2026-09-19T07:49:24.438Z"
   }
 }

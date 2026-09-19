@@ -5,6 +5,8 @@ import {
   SingleMessagePayload,
   CampaignPayload,
   CampaignResult,
+  QuickSendPayload,
+  CampaignRecipientStatus,
 } from '../types';
 
 export class UnaiFlowClient implements MessagingProvider {
@@ -14,8 +16,11 @@ export class UnaiFlowClient implements MessagingProvider {
    * Validates and sanitizes the base URL, preventing SSRF to cloud metadata or prohibited domains.
    */
   public sanitizeBaseUrl(rawUrl?: string): string {
-    const fallback = process.env.UNAI_FLOW_API_BASE_URL || 'http://localhost:8000';
-    const targetUrl = (rawUrl && rawUrl.trim()) ? rawUrl.trim() : fallback;
+    const fallback =
+      process.env.UNAI_FLOW_API_BASE_URL ||
+      process.env.NEXT_PUBLIC_UNAI_FLOW_API_BASE_URL ||
+      'https://unai-flow-backend-w4al.onrender.com';
+    const targetUrl = rawUrl && rawUrl.trim() ? rawUrl.trim() : fallback;
 
     let parsed: URL;
     try {
@@ -29,7 +34,7 @@ export class UnaiFlowClient implements MessagingProvider {
     }
 
     const host = parsed.hostname.toLowerCase();
-    // SSRF Guard
+    // SSRF Guard against cloud metadata targets
     if (
       host === '169.254.169.254' ||
       host === 'metadata.google.internal' ||
@@ -43,25 +48,34 @@ export class UnaiFlowClient implements MessagingProvider {
   }
 
   /**
-   * Helper to perform authenticated fetch with timeout and safe error handling.
+   * Helper to sleep for ms.
+   */
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Helper to perform authenticated fetch with timeout, cold-start (503) retry, and safe error handling.
    */
   private async executeFetch(
     baseUrl: string,
     path: string,
     apiKey: string,
     options: RequestInit = {},
-    timeoutMs = 10000
-  ): Promise<{ ok: boolean; status: number; data: any; networkError?: boolean }> {
+    timeoutMs = 15000,
+    retryCount = 0
+  ): Promise<{ ok: boolean; status: number; data: any; networkError?: boolean; errorMessage?: string }> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     const fullUrl = `${baseUrl}${path}`;
-    const authHeader = apiKey.startsWith('wa_') ? `Bearer ${apiKey}` : `Bearer ${apiKey}`;
+    const cleanApiKey = apiKey.trim();
 
     const headers: Record<string, string> = {
-      'Authorization': authHeader,
+      'X-API-Key': cleanApiKey,
+      'Authorization': `Bearer ${cleanApiKey}`,
       'Content-Type': 'application/json',
-      'User-Agent': 'Vikaalam-CRM/1.0',
+      'User-Agent': 'Vikaalam-CRM-Integration/1.0',
       ...(options.headers as Record<string, string> || {}),
     };
 
@@ -73,6 +87,12 @@ export class UnaiFlowClient implements MessagingProvider {
       });
       clearTimeout(timer);
 
+      // Handle 503 Cold Start Retry (max 2 retries, 2.5s delay)
+      if (response.status === 503 && retryCount < 2) {
+        await this.sleep(2500);
+        return this.executeFetch(baseUrl, path, apiKey, options, timeoutMs, retryCount + 1);
+      }
+
       let data: any = null;
       try {
         data = await response.json();
@@ -80,32 +100,64 @@ export class UnaiFlowClient implements MessagingProvider {
         data = null;
       }
 
+      let errorMessage: string | undefined;
+      if (!response.ok) {
+        if (response.status === 401) {
+          errorMessage = 'Invalid API key — please re-enter in Settings';
+        } else if (response.status === 403) {
+          errorMessage = 'Missing permissions — check UNAI FLOW application scopes';
+        } else if (response.status === 422) {
+          const detail = data?.detail || data?.error?.message || data?.error;
+          errorMessage = typeof detail === 'string' ? detail : JSON.stringify(detail || 'Validation error');
+        } else if (response.status === 429) {
+          errorMessage = 'Rate limit exceeded. Please back off and retry shortly.';
+        } else if (response.status === 503) {
+          errorMessage = 'UNAI FLOW backend is warming up (cold start). Please retry in a few seconds.';
+        } else {
+          errorMessage =
+            data?.error?.message || data?.detail || data?.message || `UNAI FLOW returned error HTTP ${response.status}`;
+        }
+      }
+
       return {
         ok: response.ok,
         status: response.status,
         data,
+        errorMessage,
       };
     } catch (err: any) {
       clearTimeout(timer);
       const isTimeout = err.name === 'AbortError';
+
+      // If network failure / timeout and we haven't exhausted retries on potential cold start
+      if (retryCount < 2 && !isTimeout) {
+        await this.sleep(2000);
+        return this.executeFetch(baseUrl, path, apiKey, options, timeoutMs, retryCount + 1);
+      }
+
       return {
         ok: false,
         status: isTimeout ? 504 : 503,
-        data: { error: isTimeout ? 'Request timed out after 10 seconds' : err.message },
+        data: null,
         networkError: true,
+        errorMessage: isTimeout
+          ? 'Request to UNAI FLOW timed out after 15 seconds'
+          : `Network error connecting to UNAI FLOW: ${err.message}`,
       };
     }
   }
 
   /**
-   * Tests developer credentials against UNAI FLOW API.
-   * Calls GET /v1/instances or /v1/usage/summary.
+   * Tests credentials against UNAI FLOW API via GET /v1/auth/verify.
    */
   async testConnection(credentials: UnaiFlowCredentials): Promise<{
     success: boolean;
     status: IntegrationStatus;
     whatsappNumber?: string;
+    applicationId?: string;
+    applicationName?: string;
     instanceId?: string;
+    scopes?: string[];
     error?: string;
   }> {
     try {
@@ -116,138 +168,53 @@ export class UnaiFlowClient implements MessagingProvider {
         return {
           success: false,
           status: 'INVALID_CREDENTIALS',
-          error: 'The UNAI FLOW API key is required.',
+          error: 'UNAI FLOW API Key is required.',
         };
       }
 
-      // 1. Call UNAI FLOW GET /v1/instances to verify authorization and check WhatsApp number
-      const res = await this.executeFetch(baseUrl, '/v1/instances', apiKey, { method: 'GET' });
+      const res = await this.executeFetch(baseUrl, '/v1/auth/verify', apiKey, { method: 'GET' });
 
       if (!res.ok) {
-        if (res.networkError) {
-          // If server is unreachable locally (e.g. UNAI FLOW daemon not running right this second),
-          // check if key has valid format (wa_live_ or wa_test_)
-          if (apiKey.startsWith('wa_live_') || apiKey.startsWith('wa_test_')) {
-            return {
-              success: true,
-              status: 'CONNECTED',
-              whatsappNumber: '+91 98401 12345',
-              instanceId: 'inst_dev_simulated',
-            };
-          }
-          return {
-            success: false,
-            status: 'API_ERROR',
-            error: `UNAI FLOW is unreachable at ${baseUrl}. Please ensure the UNAI FLOW backend service is running.`,
-          };
-        }
-
-        if (res.status === 401 || res.status === 403) {
-          return {
-            success: false,
-            status: 'INVALID_CREDENTIALS',
-            error: 'The UNAI FLOW API key is invalid or revoked.',
-          };
-        }
-
-        if (res.status === 429) {
-          return {
-            success: false,
-            status: 'API_ERROR',
-            error: 'UNAI FLOW rate limit reached. Please try again later.',
-          };
-        }
-
         return {
           success: false,
-          status: 'API_ERROR',
-          error: res.data?.detail || res.data?.error || `UNAI FLOW API returned HTTP ${res.status}.`,
+          status: res.status === 401 ? 'INVALID_CREDENTIALS' : 'API_ERROR',
+          error: res.errorMessage || 'Failed to authenticate with UNAI FLOW',
         };
       }
 
-      // Successful response from /v1/instances
-      const instances = Array.isArray(res.data) ? res.data : res.data?.instances || [];
+      const data = res.data || {};
+      const isValid = data.valid === true;
 
-      if (instances.length === 0) {
+      if (!isValid) {
         return {
           success: false,
-          status: 'WHATSAPP_NOT_CONNECTED',
-          error: 'The WhatsApp number associated with this UNAI FLOW application is not connected.',
+          status: 'INVALID_CREDENTIALS',
+          error: 'UNAI FLOW reported invalid API Key credentials.',
         };
       }
 
-      const activeInst = instances.find(
-        (i: any) =>
-          i.status === 'AUTHENTICATED' ||
-          i.status === 'CONNECTED' ||
-          i.status === 'READY' ||
-          i.connection_state === 'open'
-      ) || instances[0];
+      const whatsapp = data.whatsapp || {};
+      const app = data.application || {};
+
+      const phone = whatsapp.whatsapp_number
+        ? whatsapp.whatsapp_number.startsWith('+')
+          ? whatsapp.whatsapp_number
+          : `+${whatsapp.whatsapp_number}`
+        : '+919342745299';
 
       return {
         success: true,
-        status: 'CONNECTED',
-        whatsappNumber: activeInst.phone_number || '+91 98401 12345',
-        instanceId: activeInst.id || activeInst.instance_uuid,
+        status: whatsapp.status === 'CONNECTED' || whatsapp.is_connected ? 'CONNECTED' : 'WHATSAPP_NOT_CONNECTED',
+        whatsappNumber: phone,
+        applicationId: app.id || credentials.applicationId,
+        applicationName: app.name || 'CRM',
+        scopes: app.scopes || [],
       };
     } catch (err: any) {
       return {
         success: false,
         status: 'UNKNOWN_ERROR',
         error: err.message || 'An unexpected error occurred testing UNAI FLOW connection.',
-      };
-    }
-  }
-
-  /**
-   * Sends a single text message through UNAI FLOW.
-   * Endpoint: POST /v1/messages/text
-   */
-  async sendSingleMessage(
-    credentials: UnaiFlowCredentials,
-    payload: SingleMessagePayload
-  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
-    try {
-      const baseUrl = this.sanitizeBaseUrl(credentials.baseUrl);
-      const apiKey = credentials.apiKey;
-
-      const formattedJid = payload.recipient_jid.includes('@')
-        ? payload.recipient_jid
-        : `${payload.recipient_jid.replace(/\D/g, '')}@s.whatsapp.net`;
-
-      const body = {
-        recipient_jid: formattedJid,
-        message: payload.message,
-        instance_id: payload.instance_id,
-      };
-
-      const res = await this.executeFetch(baseUrl, '/v1/messages/text', apiKey, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-
-      if (!res.ok) {
-        if (res.networkError) {
-          // Simulation fallback for development
-          return {
-            success: true,
-            messageId: `msg_sim_${Date.now()}`,
-          };
-        }
-        return {
-          success: false,
-          error: res.data?.detail || res.data?.error || `Failed to send WhatsApp message (HTTP ${res.status}).`,
-        };
-      }
-
-      return {
-        success: true,
-        messageId: res.data?.message_id || res.data?.id || `msg_${Date.now()}`,
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        error: err.message || 'Failed to dispatch WhatsApp message.',
       };
     }
   }
@@ -264,13 +231,18 @@ export class UnaiFlowClient implements MessagingProvider {
       const baseUrl = this.sanitizeBaseUrl(credentials.baseUrl);
       const apiKey = credentials.apiKey;
 
-      const formattedRecipients = payload.recipients.map((r) => ({
-        recipient_jid: r.recipient_jid.includes('@')
-          ? r.recipient_jid
-          : `${r.recipient_jid.replace(/\D/g, '')}@s.whatsapp.net`,
-        recipient_name: r.recipient_name,
-        variables: r.variables || {},
-      }));
+      const formattedRecipients = payload.recipients.map((r) => {
+        let jid = r.recipient_jid.trim();
+        if (!jid.includes('@')) {
+          const digits = jid.replace(/\D/g, '');
+          jid = digits.startsWith('+') ? digits : `+${digits}`;
+        }
+        return {
+          recipient_jid: jid,
+          recipient_name: r.recipient_name || '',
+          variables: r.variables || {},
+        };
+      });
 
       const body = {
         name: payload.name,
@@ -278,34 +250,22 @@ export class UnaiFlowClient implements MessagingProvider {
         message_payload: payload.message_payload,
         recipients: formattedRecipients,
         messages_per_second: payload.messages_per_second || 2.0,
-        instance_id: payload.instance_id,
       };
+
+      const idempotencyKey = `camp_create_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
       const res = await this.executeFetch(baseUrl, '/v1/campaigns', apiKey, {
         method: 'POST',
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
         body: JSON.stringify(body),
       });
 
       if (!res.ok) {
-        if (res.networkError) {
-          // Simulated draft creation for offline dev
-          return {
-            success: true,
-            campaign: {
-              id: `camp_${Date.now()}`,
-              name: payload.name,
-              status: 'draft',
-              total_recipients: formattedRecipients.length,
-              queued_count: 0,
-              sent_count: 0,
-              delivered_count: 0,
-              failed_count: 0,
-            },
-          };
-        }
         return {
           success: false,
-          error: res.data?.detail || res.data?.error || `Failed to create campaign (HTTP ${res.status}).`,
+          error: res.errorMessage || 'Failed to create campaign on UNAI FLOW',
         };
       }
 
@@ -328,31 +288,31 @@ export class UnaiFlowClient implements MessagingProvider {
   async launchCampaign(
     credentials: UnaiFlowCredentials,
     campaignId: string
-  ): Promise<{ success: boolean; status?: string; error?: string }> {
+  ): Promise<{ success: boolean; status?: string; queuedCount?: number; error?: string }> {
     try {
       const baseUrl = this.sanitizeBaseUrl(credentials.baseUrl);
       const apiKey = credentials.apiKey;
 
+      const idempotencyKey = `camp_launch_${campaignId}_${Date.now()}`;
+
       const res = await this.executeFetch(baseUrl, `/v1/campaigns/${campaignId}/launch`, apiKey, {
         method: 'POST',
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
       });
 
       if (!res.ok) {
-        if (res.networkError) {
-          return {
-            success: true,
-            status: 'queued',
-          };
-        }
         return {
           success: false,
-          error: res.data?.detail || res.data?.error || `Failed to launch campaign (HTTP ${res.status}).`,
+          error: res.errorMessage || 'Failed to launch campaign on UNAI FLOW',
         };
       }
 
       return {
         success: true,
         status: res.data?.status || 'queued',
+        queuedCount: res.data?.queued_count,
       };
     } catch (err: any) {
       return {
@@ -379,25 +339,9 @@ export class UnaiFlowClient implements MessagingProvider {
       });
 
       if (!res.ok) {
-        if (res.networkError) {
-          // Dev simulated campaign progression
-          return {
-            success: true,
-            campaign: {
-              id: campaignId,
-              name: 'Reactivation Campaign',
-              status: 'completed',
-              total_recipients: 41,
-              queued_count: 0,
-              sent_count: 41,
-              delivered_count: 40,
-              failed_count: 1,
-            },
-          };
-        }
         return {
           success: false,
-          error: res.data?.detail || res.data?.error || `Failed to fetch status (HTTP ${res.status}).`,
+          error: res.errorMessage || `Failed to fetch status for campaign ${campaignId}`,
         };
       }
 
@@ -411,6 +355,213 @@ export class UnaiFlowClient implements MessagingProvider {
         error: err.message || 'Error querying campaign status.',
       };
     }
+  }
+
+  /**
+   * Fetches paginated campaigns list.
+   * Endpoint: GET /v1/campaigns?page=1&page_size=20
+   */
+  async getCampaigns(
+    credentials: UnaiFlowCredentials,
+    page = 1,
+    pageSize = 20
+  ): Promise<{ success: boolean; campaigns: CampaignResult[]; total: number; error?: string }> {
+    try {
+      const baseUrl = this.sanitizeBaseUrl(credentials.baseUrl);
+      const apiKey = credentials.apiKey;
+
+      const res = await this.executeFetch(baseUrl, `/v1/campaigns?page=${page}&page_size=${pageSize}`, apiKey, {
+        method: 'GET',
+      });
+
+      if (!res.ok) {
+        return {
+          success: false,
+          campaigns: [],
+          total: 0,
+          error: res.errorMessage || 'Failed to fetch campaigns list',
+        };
+      }
+
+      const campaigns = Array.isArray(res.data?.campaigns) ? res.data.campaigns : [];
+      const total = typeof res.data?.total === 'number' ? res.data.total : campaigns.length;
+
+      return {
+        success: true,
+        campaigns,
+        total,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        campaigns: [],
+        total: 0,
+        error: err.message || 'Error fetching campaigns',
+      };
+    }
+  }
+
+  /**
+   * Fetches recipient breakdown for a campaign.
+   * Endpoint: GET /v1/campaigns/{id}/recipients?page=1&page_size=50
+   */
+  async getCampaignRecipients(
+    credentials: UnaiFlowCredentials,
+    campaignId: string,
+    page = 1,
+    pageSize = 50
+  ): Promise<{ success: boolean; recipients: CampaignRecipientStatus[]; total: number; error?: string }> {
+    try {
+      const baseUrl = this.sanitizeBaseUrl(credentials.baseUrl);
+      const apiKey = credentials.apiKey;
+
+      const res = await this.executeFetch(
+        baseUrl,
+        `/v1/campaigns/${campaignId}/recipients?page=${page}&page_size=${pageSize}`,
+        apiKey,
+        { method: 'GET' }
+      );
+
+      if (!res.ok) {
+        return {
+          success: false,
+          recipients: [],
+          total: 0,
+          error: res.errorMessage || 'Failed to fetch campaign recipients',
+        };
+      }
+
+      const recipients = Array.isArray(res.data?.recipients)
+        ? res.data.recipients
+        : Array.isArray(res.data)
+        ? res.data
+        : [];
+      const total = typeof res.data?.total === 'number' ? res.data.total : recipients.length;
+
+      return {
+        success: true,
+        recipients,
+        total,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        recipients: [],
+        total: 0,
+        error: err.message || 'Error fetching recipient details',
+      };
+    }
+  }
+
+  /**
+   * Cancels an active or queued campaign.
+   * Endpoint: POST /v1/campaigns/{id}/cancel
+   */
+  async cancelCampaign(
+    credentials: UnaiFlowCredentials,
+    campaignId: string
+  ): Promise<{ success: boolean; message?: string; error?: string }> {
+    try {
+      const baseUrl = this.sanitizeBaseUrl(credentials.baseUrl);
+      const apiKey = credentials.apiKey;
+
+      const res = await this.executeFetch(baseUrl, `/v1/campaigns/${campaignId}/cancel`, apiKey, {
+        method: 'POST',
+      });
+
+      if (!res.ok) {
+        return {
+          success: false,
+          error: res.errorMessage || 'Failed to cancel campaign on UNAI FLOW',
+        };
+      }
+
+      return {
+        success: true,
+        message: res.data?.message || 'Campaign cancelled successfully',
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Error cancelling campaign',
+      };
+    }
+  }
+
+  /**
+   * Quick Single/Bulk message send in one API call.
+   * Endpoint: POST /v1/messages/send
+   */
+  async sendQuickMessage(
+    credentials: UnaiFlowCredentials,
+    payload: QuickSendPayload
+  ): Promise<{ success: boolean; campaignId?: string; totalRecipients?: number; error?: string }> {
+    try {
+      const baseUrl = this.sanitizeBaseUrl(credentials.baseUrl);
+      const apiKey = credentials.apiKey;
+
+      const formattedTo = payload.to.map((phone) => {
+        const clean = phone.trim();
+        if (clean.startsWith('+')) return clean;
+        const digits = clean.replace(/\D/g, '');
+        return `+${digits}`;
+      });
+
+      const body = {
+        to: formattedTo,
+        message: payload.message,
+        message_type: payload.message_type || 'text',
+        campaign_name: payload.campaign_name || 'Quick Blast',
+        ...(payload.media_url ? { media_url: payload.media_url } : {}),
+      };
+
+      const idempotencyKey = `quick_send_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+      const res = await this.executeFetch(baseUrl, '/v1/messages/send', apiKey, {
+        method: 'POST',
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        return {
+          success: false,
+          error: res.errorMessage || 'Failed to dispatch quick WhatsApp blast',
+        };
+      }
+
+      return {
+        success: true,
+        campaignId: res.data?.campaign_id || res.data?.id,
+        totalRecipients: res.data?.total_recipients || formattedTo.length,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Error dispatching quick messages',
+      };
+    }
+  }
+
+  /**
+   * Sends a single text message through UNAI FLOW.
+   * Endpoint: POST /v1/messages/text or POST /v1/messages/send
+   */
+  async sendSingleMessage(
+    credentials: UnaiFlowCredentials,
+    payload: SingleMessagePayload
+  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    return this.sendQuickMessage(credentials, {
+      to: [payload.recipient_jid],
+      message: payload.message,
+      campaign_name: 'Single Lead Message',
+    }).then((res) => ({
+      success: res.success,
+      messageId: res.campaignId,
+      error: res.error,
+    }));
   }
 }
 

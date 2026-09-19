@@ -45,18 +45,18 @@ interface IntegrationState {
 export default function IntegrationsSettingsPage() {
   const [unaiFlow, setUnaiFlow] = useState<IntegrationState>({
     status: 'NOT_CONNECTED',
-    base_url: 'http://localhost:8000',
+    base_url: 'https://unai-flow-backend-w4al.onrender.com',
   });
   const [isLoading, setIsLoading] = useState(true);
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [formData, setFormData] = useState({
-    applicationId: 'vikaalam-crm-acquisition',
-    clientId: 'vikaalam_client_01',
+    applicationId: '',
+    clientId: '',
     apiKey: '',
     clientSecret: '',
-    baseUrl: 'http://localhost:8000',
+    baseUrl: 'https://unai-flow-backend-w4al.onrender.com',
   });
   const [showApiKey, setShowApiKey] = useState(false);
   const [showClientSecret, setShowClientSecret] = useState(false);
@@ -101,8 +101,8 @@ export default function IntegrationsSettingsPage() {
     }
   };
 
-  const handleTestConnection = async () => {
-    if (!formData.apiKey.trim()) {
+  const handleTestConnection = async (useStored = false) => {
+    if (!useStored && !formData.apiKey.trim() && unaiFlow.status !== 'CONNECTED') {
       setTestResult({
         tested: true,
         success: false,
@@ -115,10 +115,11 @@ export default function IntegrationsSettingsPage() {
     setTestResult(null);
 
     try {
+      const payload = useStored || !formData.apiKey.trim() ? {} : formData;
       const res = await fetch('/api/integrations/unai-flow/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(formData),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
 
@@ -129,6 +130,14 @@ export default function IntegrationsSettingsPage() {
           message: 'Connection validated successfully with UNAI FLOW API!',
           phone: data.whatsapp_number,
         });
+        if (data.whatsapp_number) {
+          setUnaiFlow((prev) => ({
+            ...prev,
+            status: 'CONNECTED',
+            whatsapp_number: data.whatsapp_number,
+            last_tested_at: new Date().toISOString(),
+          }));
+        }
       } else {
         setTestResult({
           tested: true,
@@ -405,25 +414,34 @@ export default function IntegrationsSettingsPage() {
             {unaiFlow.status === 'CONNECTED' ? (
               <>
                 <button
+                  onClick={() => handleTestConnection(true)}
+                  disabled={isTesting}
+                  className="px-3 py-2 text-xs font-semibold rounded-xl bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-400 border border-emerald-800/40 transition flex items-center gap-1.5"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isTesting ? 'animate-spin' : ''}`} />
+                  <span>{isTesting ? 'Testing...' : 'Test Connection'}</span>
+                </button>
+
+                <button
                   onClick={() => {
                     setIsModalOpen(true);
                     setFormData((prev) => ({
                       ...prev,
-                      baseUrl: unaiFlow.base_url || 'http://localhost:8000',
-                      applicationId: unaiFlow.application_id || 'vikaalam-crm-acquisition',
+                      baseUrl: unaiFlow.base_url || 'https://unai-flow-backend-w4al.onrender.com',
+                      applicationId: unaiFlow.application_id || '',
                     }));
                   }}
-                  className="px-3.5 py-2 text-xs font-semibold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+                  className="px-3 py-2 text-xs font-semibold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
                 >
-                  View / Edit Credentials
+                  Edit Keys
                 </button>
 
                 <button
                   onClick={handleDisconnect}
                   disabled={isDisconnecting}
-                  className="px-3.5 py-2 text-xs font-semibold rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-400 border border-red-800/40 transition disabled:opacity-50"
+                  className="px-3 py-2 text-xs font-semibold rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-400 border border-red-800/40 transition disabled:opacity-50"
                 >
-                  {isDisconnecting ? 'Disconnecting...' : 'Disconnect UNAI FLOW'}
+                  {isDisconnecting ? '...' : 'Disconnect'}
                 </button>
               </>
             ) : (
@@ -681,7 +699,7 @@ export default function IntegrationsSettingsPage() {
               <div className="pt-4 border-t border-slate-800 flex items-center justify-between gap-3">
                 <button
                   type="button"
-                  onClick={handleTestConnection}
+                  onClick={() => handleTestConnection(false)}
                   disabled={isTesting || isSaving}
                   className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded-xl border border-slate-700 transition flex items-center gap-2 disabled:opacity-50"
                 >

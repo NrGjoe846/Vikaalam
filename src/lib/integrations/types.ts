@@ -48,12 +48,36 @@ export interface CampaignPayload {
   name: string;
   message_type?: 'text' | 'image' | 'video' | 'audio' | 'poll';
   message_payload: {
-    body: string;
+    body?: string;
     media_url?: string;
+    caption?: string;
+    poll?: {
+      question: string;
+      options: string[];
+    };
   };
   recipients: CampaignRecipient[];
   messages_per_second?: number;
   instance_id?: string;
+}
+
+export interface QuickSendPayload {
+  to: string[];
+  message: string;
+  message_type?: 'text' | 'image' | 'video' | 'audio';
+  campaign_name?: string;
+  media_url?: string;
+}
+
+export interface CampaignRecipientStatus {
+  id?: string;
+  recipient_jid: string;
+  recipient_name?: string;
+  status: 'pending' | 'queued' | 'sending' | 'delivered' | 'failed';
+  error_message?: string;
+  timestamp?: string;
+  sent_at?: string;
+  delivered_at?: string;
 }
 
 export interface CampaignResult {

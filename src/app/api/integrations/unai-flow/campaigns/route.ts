@@ -3,14 +3,82 @@ import { IntegrationStorage } from '@/lib/server/integration-storage';
 import { unaiFlowClient } from '@/lib/integrations/unai-flow/client';
 import { getSupabaseServerClient } from '@/lib/supabase/server';
 
+export async function GET(req: NextRequest) {
+  try {
+    const { searchParams } = new URL(req.url);
+    const orgId = searchParams.get('orgId') || 'org_default';
+    const page = parseInt(searchParams.get('page') || '1', 10);
+    const pageSize = parseInt(searchParams.get('pageSize') || '20', 10);
+
+    const creds = await IntegrationStorage.getDecryptedCredentials(orgId, 'unai_flow', 'whatsapp_bulk');
+    if (!creds || !creds.apiKey) {
+      return NextResponse.json(
+        {
+          success: false,
+          campaigns: [],
+          total: 0,
+          error: 'UNAI FLOW integration is not connected. Please configure in Settings -> Integrations.',
+        },
+        { status: 403 }
+      );
+    }
+
+    const res = await unaiFlowClient.getCampaigns(creds, page, pageSize);
+
+    return NextResponse.json({
+      success: res.success,
+      campaigns: res.campaigns,
+      total: res.total,
+      error: res.error,
+    });
+  } catch (err: any) {
+    return NextResponse.json(
+      { success: false, campaigns: [], total: 0, error: err.message || 'Server error fetching campaigns' },
+      { status: 500 }
+    );
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { name, messageBody, recipients, messagesPerSecond = 2.0, orgId = 'org_default' } = body;
+    const {
+      name,
+      message_type = 'text',
+      message_payload,
+      messageBody, // fallback if flat messageBody provided
+      mediaUrl,
+      caption,
+      poll,
+      recipients,
+      messagesPerSecond = 2.0,
+      orgId = 'org_default',
+    } = body;
 
-    if (!messageBody || !recipients || !recipients.length) {
+    const payloadObj = message_payload || {
+      body: messageBody || '',
+      media_url: mediaUrl,
+      caption: caption,
+      poll: poll,
+    };
+
+    if (!recipients || !recipients.length) {
       return NextResponse.json(
-        { success: false, error: 'Campaign message body and at least one recipient are required.' },
+        { success: false, error: 'At least one recipient is required to launch a campaign.' },
+        { status: 400 }
+      );
+    }
+
+    if (message_type === 'text' && !payloadObj.body) {
+      return NextResponse.json(
+        { success: false, error: 'Message body is required for text campaigns.' },
+        { status: 400 }
+      );
+    }
+
+    if ((message_type === 'image' || message_type === 'video' || message_type === 'audio') && !payloadObj.media_url) {
+      return NextResponse.json(
+        { success: false, error: 'A publicly accessible media URL is required for media campaigns.' },
         { status: 400 }
       );
     }
@@ -27,31 +95,33 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Create campaign on UNAI FLOW
+    // 2. Step 1: Create campaign on UNAI FLOW (POST /v1/campaigns)
     const createRes = await unaiFlowClient.createCampaign(creds, {
-      name: name || `Reactivation Broadcast ${new Date().toLocaleDateString()}`,
-      message_type: 'text',
-      message_payload: {
-        body: messageBody,
-      },
+      name: name || `WhatsApp Broadcast ${new Date().toLocaleDateString()}`,
+      message_type,
+      message_payload: payloadObj,
       recipients,
-      messages_per_second: messagesPerSecond,
+      messages_per_second: Math.max(0.1, Math.min(10.0, Number(messagesPerSecond) || 2.0)),
     });
 
     if (!createRes.success || !createRes.campaign) {
       return NextResponse.json(
-        { success: false, error: createRes.error || 'Failed to stage campaign on UNAI FLOW' },
+        { success: false, error: createRes.error || 'Failed to create campaign on UNAI FLOW' },
         { status: 502 }
       );
     }
 
     const campaignId = createRes.campaign.id;
 
-    // 3. Launch campaign on UNAI FLOW
+    // 3. Step 2: Launch campaign on UNAI FLOW (POST /v1/campaigns/{id}/launch)
     const launchRes = await unaiFlowClient.launchCampaign(creds, campaignId);
     if (!launchRes.success) {
       return NextResponse.json(
-        { success: false, error: launchRes.error || 'Failed to launch campaign on UNAI FLOW' },
+        {
+          success: false,
+          campaignId,
+          error: launchRes.error || 'Campaign created in draft, but failed to launch on UNAI FLOW.',
+        },
         { status: 502 }
       );
     }
@@ -64,12 +134,12 @@ export async function POST(req: NextRequest) {
           organization_id: orgId,
           provider: 'unai_flow',
           external_campaign_id: campaignId,
-          name: name || `Reactivation Broadcast`,
-          status: 'queued',
+          name: name || `WhatsApp Broadcast`,
+          status: launchRes.status || 'queued',
           total_recipients: recipients.length,
-          queued_count: recipients.length,
+          queued_count: launchRes.queuedCount || recipients.length,
           messages_per_second: messagesPerSecond,
-          message_payload: { body: messageBody },
+          message_payload: payloadObj,
           recipients: recipients,
           launched_at: new Date().toISOString(),
         });
@@ -83,9 +153,9 @@ export async function POST(req: NextRequest) {
       campaign: {
         id: campaignId,
         name: createRes.campaign.name,
-        status: 'queued',
+        status: launchRes.status || 'queued',
         total_recipients: recipients.length,
-        queued_count: recipients.length,
+        queued_count: launchRes.queuedCount || recipients.length,
         sent_count: 0,
         delivered_count: 0,
         failed_count: 0,

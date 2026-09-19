@@ -23,10 +23,10 @@ const NAV_ITEMS = [
   { href: '/leads/L10291', label: 'Lead Workspace', icon: Sparkles, badge: 'Active AI' },
   { href: '/inspector', label: 'Inspector App', icon: Smartphone, badge: 'PWA' },
   { href: '/approvals', label: 'Pricing Approvals', icon: ShieldCheck, badge: '2 Pending' },
-  { href: '/marketing', label: 'Marketing & Reactivation', icon: Megaphone },
+  { href: '/marketing', label: 'WhatsApp Campaigns', icon: Megaphone, badge: 'UNAI FLOW' },
   { href: '/analytics', label: 'Management AI & KPIs', icon: BarChart3 },
   { href: '/employees', label: 'Employee OS', icon: Users },
-  { href: '/settings/integrations', label: 'Integrations & API', icon: Plug, badge: 'UNAI FLOW' },
+  { href: '/settings/integrations', label: 'Integrations & API', icon: Plug },
 ];
 
 export function Sidebar() {
