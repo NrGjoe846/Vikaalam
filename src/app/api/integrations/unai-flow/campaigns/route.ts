@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
     if (!createRes.success || !createRes.campaign) {
       return NextResponse.json(
         { success: false, error: createRes.error || 'Failed to create campaign on UNAI FLOW' },
-        { status: 502 }
+        { status: 400 }
       );
     }
 
@@ -122,7 +122,7 @@ export async function POST(req: NextRequest) {
           campaignId,
           error: launchRes.error || 'Campaign created in draft, but failed to launch on UNAI FLOW.',
         },
-        { status: 502 }
+        { status: 400 }
       );
     }
 
